@@ -24,13 +24,13 @@ func main() {
 	// month := "10"
 	// newPrefix := "new_folder/"    // New folder for the uploaded zip
 	// zipName := "archive.zip"      // Name of the zip file
-	localDir := "/tmp/downloads/" // Local directory to store downloads
-	region := "us-west-2"         // Your AWS region
+	//localDir := "/tmp/downloads/" // Local directory to store downloads
+	region := "us-east-2" // Your AWS region
 
 	// Create local directory if it doesn't exist
-	if err := os.MkdirAll(localDir, os.ModePerm); err != nil {
-		log.Fatalf("Failed to create local directory: %v", err)
-	}
+	// if err := os.MkdirAll(localDir, os.ModePerm); err != nil {
+	// 	log.Fatalf("Failed to create local directory: %v", err)
+	// }
 
 	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
