@@ -1,7 +1,7 @@
 package main
 
 import (
-	"archive/zip"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -18,55 +18,32 @@ import (
 )
 
 func main() {
-	// Configuration - replace these with your actual values
 	bucket := "hashfleet-data-lake-prod"
-	// year := "2025"
-	// month := "10"
-	// newPrefix := "new_folder/"    // New folder for the uploaded zip
-	// zipName := "archive.zip"      // Name of the zip file
-	//localDir := "/tmp/downloads/" // Local directory to store downloads
-	region := "us-east-2" // Your AWS region
+	localDir := "./downloads/"
+	region := "us-east-2"
 
-	// Create local directory if it doesn't exist
-	// if err := os.MkdirAll(localDir, os.ModePerm); err != nil {
-	// 	log.Fatalf("Failed to create local directory: %v", err)
-	// }
+	if err := os.MkdirAll(localDir, os.ModePerm); err != nil {
+		log.Fatalf("Failed to create local directory: %v", err)
+	}
 
-	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 	if err != nil {
 		log.Fatalf("Unable to load SDK config: %v", err)
 	}
 
-	// Create S3 client
 	svc := s3.NewFromConfig(cfg)
 
-	// Create downloader and uploader
-	//downloader := manager.NewDownloader(svc)
-	//uploader := manager.NewUploader(svc)
-
-	// Collect all .json.gz keys recursively
+	downloader := manager.NewDownloader(svc)
 	var keys []string
-	collectRecursive(svc, bucket, "miner_data/2025/10/01/00", &keys)
+	collectRecursive(svc, bucket, "miner_data/2025/10/20/13", &keys)
+	downloadFiles(context.TODO(), downloader, bucket, localDir, keys)
 
-	// Download files concurrently
-	//downloadFiles(context.TODO(), downloader, bucket, localDir, keys)
-
-	// Create zip file from downloaded files
-	// zipPath := "/tmp/" + zipName
-	// if err := createZip(localDir, zipPath); err != nil {
-	// 	log.Fatalf("Failed to create zip: %v", err)
-	// }
-
-	// Upload the zip file to the new folder in the bucket
-	// if err := uploadFile(context.TODO(), uploader, bucket, newPrefix+zipName, zipPath); err != nil {
-	// 	log.Fatalf("Failed to upload zip: %v", err)
-	// }
-
-	log.Println("Process completed successfully.")
+	log.Println("Decompressing .json.gz files...")
+	if err := decompressGzipFiles(localDir); err != nil {
+		log.Fatalf("Failed to decompress files: %v", err)
+	}
 }
 
-// collectRecursive recursively traverses the S3 prefix and collects .json.gz keys
 func collectRecursive(svc *s3.Client, bucket, prefix string, keys *[]string) {
 	input := &s3.ListObjectsV2Input{
 		Bucket:    aws.String(bucket),
@@ -96,7 +73,6 @@ func collectRecursive(svc *s3.Client, bucket, prefix string, keys *[]string) {
 	}
 }
 
-// downloadFiles downloads the files concurrently using goroutines
 func downloadFiles(ctx context.Context, downloader *manager.Downloader, bucket, localDir string, keys []string) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 20) // Limit concurrent downloads to 20
@@ -137,60 +113,51 @@ func downloadFiles(ctx context.Context, downloader *manager.Downloader, bucket, 
 	wg.Wait()
 }
 
-// createZip compresses all files in sourceDir into a zip file at zipPath
-func createZip(sourceDir, zipPath string) error {
-	zipFile, err := os.Create(zipPath)
-	if err != nil {
-		return err
-	}
-	defer zipFile.Close()
-
-	zipWriter := zip.NewWriter(zipFile)
-	defer zipWriter.Close()
-
-	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+func decompressGzipFiles(rootDir string) error {
+	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+
+		if info.IsDir() || !strings.HasSuffix(path, ".json.gz") {
 			return nil
 		}
 
-		relPath, err := filepath.Rel(sourceDir, path)
+		outputPath := strings.TrimSuffix(path, ".gz")
+
+		gzFile, err := os.Open(path)
 		if err != nil {
-			return err
+			log.Printf("Failed to open %s: %v", path, err)
+			return nil
+		}
+		defer gzFile.Close()
+
+		gzReader, err := gzip.NewReader(gzFile)
+		if err != nil {
+			log.Printf("Failed to create gzip reader for %s: %v", path, err)
+			return nil
+		}
+		defer gzReader.Close()
+
+		outFile, err := os.Create(outputPath)
+		if err != nil {
+			log.Printf("Failed to create output file %s: %v", outputPath, err)
+			return nil
+		}
+		defer outFile.Close()
+
+		_, err = io.Copy(outFile, gzReader)
+		if err != nil {
+			log.Printf("Failed to decompress %s to %s: %v", path, outputPath, err)
+			return nil
 		}
 
-		w, err := zipWriter.Create(relPath)
-		if err != nil {
-			return err
+		log.Printf("Decompressed %s to %s", path, outputPath)
+
+		if err := os.Remove(path); err != nil {
+			log.Printf("Warning: Failed to remove original file %s: %v", path, err)
 		}
 
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		_, err = io.Copy(w, f)
-		return err
+		return nil
 	})
-
-	return err
-}
-
-// uploadFile uploads the file at filePath to S3 at the given key
-func uploadFile(ctx context.Context, uploader *manager.Uploader, bucket, key, filePath string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = uploader.Upload(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-		Body:   f,
-	})
-	return err
 }
